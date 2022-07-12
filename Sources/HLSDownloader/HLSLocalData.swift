@@ -111,3 +111,9 @@ public enum HLSLocalDataStatus: String, CaseIterable {
     case downloading /// 正在下载
     case done /// 下载完成
 }
+
+public struct ProgressStruct {
+    public let progress: Double
+    public let status: HLSLocalDataStatus
+    public var desc: String?
+}

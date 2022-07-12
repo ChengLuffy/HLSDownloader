@@ -30,7 +30,7 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
     public private(set) var localDatasSubject: CurrentValueSubject<[HLSLocalData], Never>!
     /// 可被订阅的进度
     ///  - **如果有更新 UI 的操作，请在主线程处理**
-    public var progressesSubject = CurrentValueSubject<[String: Double], Never>([String: Double]())
+    public var progressesSubject = CurrentValueSubject<[String: ProgressStruct], Never>([String: ProgressStruct]())
     /// 数据存储根目录
     public let indexPath: String = {
         let docPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0]
@@ -56,7 +56,7 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
         }
     }
     /// 下载进度
-    private var progresses = [String: Double]() {
+    private var progresses = [String: ProgressStruct]() {
         didSet {
             progressesSubject.send(progresses)
         }
@@ -331,7 +331,8 @@ extension HLSDownloader: AVAssetDownloadDelegate, URLSessionDataDelegate {
         }
         percentComplete *= 100
         if let item = filterItem(byIdentifier: assetDownloadTask.taskIdentifier) {
-            progresses[item.title] = percentComplete
+            let progressStruct = ProgressStruct(progress: percentComplete, status: .downloading)
+            progresses[item.title] = progressStruct
         }
     }
     public func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
@@ -352,11 +353,14 @@ extension HLSDownloader: AVAssetDownloadDelegate, URLSessionDataDelegate {
             } else {
                 logger.error("下载失败：\(error?.localizedDescription ?? "unknown")")
                 updateItem(byTitle: item.title, status: .error)
+                let progressStruct = ProgressStruct(progress: 0, status: .error, desc: error?.localizedDescription)
+                progresses[item.title] = progressStruct
                 return
             }
         }
         updateItem(byTitle: item.title, status: .done)
-        progresses[item.title] = 100.0
+        let progressStruct = ProgressStruct(progress: 100.0, status: .done)
+        progresses[item.title] = progressStruct
     }
     public func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         DispatchQueue.main.async {

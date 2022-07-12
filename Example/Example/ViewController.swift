@@ -143,7 +143,7 @@ class ListCell: UICollectionViewListCell {
             else {
                 return
             }
-            config.secondaryText = String(format: "%.2f", progress)
+            config.secondaryText = String(format: "%.2f", progress.progress)
             self.contentConfiguration = config
         }.store(in: &disposeBag)
     }
