@@ -38,16 +38,7 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
         return indexPath
     }()
     // MARK: - 私有属性
-    /// 下载队列
-    /// - discussion 正在下载时，如果进入后台 maxConcurrentOperationCount 就会失效 不知道原因
-    private let queue: OperationQueue = {
-        let _queue = OperationQueue()
-        _queue.name = "HLSDownloader"
-        _queue.maxConcurrentOperationCount = 1
-        return _queue
-    }()
-    /// 下载的操作字典，key 为 taskid
-    fileprivate var operations = [Int: DownloadOperation]()
+    fileprivate var tasks = [Int: AVAssetDownloadTask]()
     /// 本地数据
     private var localDatas: [HLSLocalData]! {
         didSet {
@@ -61,19 +52,17 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
             progressesSubject.send(progresses)
         }
     }
-    /// 下载配置
-    private let configuration = URLSessionConfiguration.background(withIdentifier: (Bundle.main.bundleIdentifier ?? "") + "_HLSDownloader")
     /// 下载 session
-    private lazy var downloadSession: AVAssetDownloadURLSession = {
-        configuration.httpMaximumConnectionsPerHost = 2
-        let downloadSession = AVAssetDownloadURLSession(configuration: configuration, assetDownloadDelegate: self, delegateQueue: nil)
-        return downloadSession
-    }()
+    private var downloadSession: AVAssetDownloadURLSession!
     
     // MARK: - 初始化方法
     /// 初始化方法，私有
     private override init() {
         super.init()
+        let configuration = URLSessionConfiguration.background(withIdentifier: (Bundle.main.bundleIdentifier ?? "") + "_HLSDownloader")
+        configuration.isDiscretionary = false
+        configuration.sessionSendsLaunchEvents = true
+        downloadSession = AVAssetDownloadURLSession(configuration: configuration, assetDownloadDelegate: self, delegateQueue: nil)
         checkDir()
         do {
             try readLocalDatas()
@@ -125,10 +114,13 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
     /// - discussion 由于 AVAssetDownloadTask 会出现暂停后无法重新开启，所以暂停后基本相当于取消
     /// - Parameter title: title
     public func suspend(byTitle title: String) {
-        if let item = filterItem(byTitle: title), let taskId = item.taskIdentifier, let operation = operations[taskId] {
-            operation.cancel()
-            updateItem(byTitle: title, status: .suspended)
-            removeItem(byTitle: title)
+        if let item = filterItem(byTitle: title), let taskId = item.taskIdentifier {
+            downloadSession.getAllTasks { [weak self] tasks in
+                if let task = tasks.first(where: { $0.taskIdentifier == taskId }) {
+                    task.suspend()
+                    self?.updateItem(byTitle: title, status: .suspended)
+                }
+            }
         }
     }
     
@@ -200,6 +192,9 @@ extension HLSDownloader {
     /// - Parameter urlStr: url
     /// - Returns: 匹配入参 urlStr 的第一个 item
     private func filterItem(byIdentifier identifier: Int) -> HLSLocalData? {
+        guard localDatas != nil else {
+            return nil
+        }
         return localDatas.first(where: { $0.taskIdentifier == identifier })
     }
     
@@ -209,12 +204,8 @@ extension HLSDownloader {
         guard let url = URL(string: item.url) else { return }
         let asset = AVURLAsset(url: url)
         guard let task = downloadSession.makeAssetDownloadTask(asset: asset, assetTitle: item.title, assetArtworkData: nil) else { return }
-        let operation = DownloadOperation(task: task)
-        if let op = operations.sorted(by: {$0.key > $1.key}).first?.value {
-            operation.addDependency(op)
-        }
-        queue.addOperation(operation)
-        operations[task.taskIdentifier] = operation
+        tasks[task.taskIdentifier] = task
+        task.resume()
         updateItem(byTitle: item.title, status: .downloading, taskIdentifier: task.taskIdentifier)
         logger.info("开始下载 \(item.title)")
     }
@@ -230,18 +221,26 @@ extension HLSDownloader {
         } catch {
             logger.error("数据同步到磁盘失败 \(#file)-\(#line)：\(error.localizedDescription)")
         }
+        guard let taskId = item.taskIdentifier else {
+            return
+        }
+        removeCache(byTitle: item.title)
+        downloadSession.getAllTasks(completionHandler: { tasks in
+            if let task = tasks.first(where: { $0.taskIdentifier == taskId }) {
+                task.cancel()
+            }
+        })
+    }
+    
+    private func removeCache(byTitle: String) {
         let libraryDirPath = NSSearchPathForDirectoriesInDomains(.libraryDirectory, .userDomainMask, true)[0]
         if let subPaths = FileManager.default.subpaths(atPath: libraryDirPath) {
-            let items = subPaths.filter({ $0.contains(item.title.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? item.title) && $0.hasSuffix(".movpkg") })
+            let items = subPaths.filter({ $0.contains(byTitle.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? byTitle) && $0.hasSuffix(".movpkg") })
             logger.info("libraryDirectory \(libraryDirPath): \(items.description)")
             items.forEach { item in
                 try? FileManager.default.removeItem(atPath: libraryDirPath + "/" + item)
             }
         }
-        guard let taskId = item.taskIdentifier, let operation = operations[taskId] else {
-            return
-        }
-        operation.cancel()
     }
     
     /// 添加数据
@@ -347,6 +346,7 @@ extension HLSDownloader: AVAssetDownloadDelegate, URLSessionDataDelegate {
             return
         }
         guard error == nil else {
+            removeCache(byTitle: item.title)
             if let error = error as? NSError, error.code == 2 || error.code == -999 {
                 logger.info("error code 2")
                 return
