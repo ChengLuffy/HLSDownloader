@@ -60,8 +60,6 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
     private override init() {
         super.init()
         let configuration = URLSessionConfiguration.background(withIdentifier: (Bundle.main.bundleIdentifier ?? "") + "_HLSDownloader")
-        configuration.isDiscretionary = false
-        configuration.sessionSendsLaunchEvents = true
         downloadSession = AVAssetDownloadURLSession(configuration: configuration, assetDownloadDelegate: self, delegateQueue: nil)
         checkDir()
         do {
@@ -221,10 +219,10 @@ extension HLSDownloader {
         } catch {
             logger.error("数据同步到磁盘失败 \(#file)-\(#line)：\(error.localizedDescription)")
         }
+        removeCache(byTitle: item.title)
         guard let taskId = item.taskIdentifier else {
             return
         }
-        removeCache(byTitle: item.title)
         downloadSession.getAllTasks(completionHandler: { tasks in
             if let task = tasks.first(where: { $0.taskIdentifier == taskId }) {
                 task.cancel()
@@ -233,12 +231,14 @@ extension HLSDownloader {
     }
     
     private func removeCache(byTitle: String) {
-        let libraryDirPath = NSSearchPathForDirectoriesInDomains(.libraryDirectory, .userDomainMask, true)[0]
-        if let subPaths = FileManager.default.subpaths(atPath: libraryDirPath) {
-            let items = subPaths.filter({ $0.contains(byTitle.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? byTitle) && $0.hasSuffix(".movpkg") })
-            logger.info("libraryDirectory \(libraryDirPath): \(items.description)")
-            items.forEach { item in
-                try? FileManager.default.removeItem(atPath: libraryDirPath + "/" + item)
+        DispatchQueue.global().async {
+            let libraryDirPath = NSSearchPathForDirectoriesInDomains(.libraryDirectory, .userDomainMask, true)[0]
+            if let subPaths = FileManager.default.subpaths(atPath: libraryDirPath) {
+                let items = subPaths.filter({ $0.contains(byTitle.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? byTitle) && $0.hasSuffix(".movpkg") })
+                logger.info("libraryDirectory \(libraryDirPath): \(items.description)")
+                items.forEach { item in
+                    try? FileManager.default.removeItem(atPath: libraryDirPath + "/" + item)
+                }
             }
         }
     }
