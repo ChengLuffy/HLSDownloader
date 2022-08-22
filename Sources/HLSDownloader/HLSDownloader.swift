@@ -53,7 +53,9 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
         }
     }
     /// 下载 session
-    private var downloadSession: AVAssetDownloadURLSession!
+    public var downloadSession: AVAssetDownloadURLSession!
+    public private(set) var isDownloading = false
+    public private(set) var downloadingItem: HLSLocalData?
     
     // MARK: - 初始化方法
     /// 初始化方法，私有
@@ -71,6 +73,13 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
         }
         localDatasSubject = CurrentValueSubject<[HLSLocalData], Never>(localDatas)
         logger.info("初始化成功 \(#file)-\(#line)：\n\(self.localDatas.description)")
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let localDatasSubject = self?.localDatasSubject else { return }
+            guard let localDatas = self?.localDatas else { return }
+            localDatasSubject.send(localDatas)
+            guard let progresses = self?.progresses else { return }
+            self?.progressesSubject.send(progresses)
+        }
     }
     
     // MARK: - 公开方法
@@ -103,8 +112,10 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
                 updateItem(byTitle: title, status: .waiting)
             }
         }
-        if let item = filterItem(byTitle: title) {
-            createTask(item)
+        if isDownloading == false {
+            if let item = filterItem(byTitle: title) {
+                createTask(item)
+            }
         }
     }
     
@@ -120,6 +131,10 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
                 }
             }
         }
+        if downloadingItem?.title == title {
+            downloadingItem = nil
+            beginDownload()
+        }
     }
     
     /// 继续下载
@@ -127,8 +142,10 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
     /// - Parameter title: title
     public func restore(byTitle title: String) {
         if let item = filterItem(byTitle: title) {
-            createTask(item)
             updateItem(byTitle: title, status: .waiting)
+            if isDownloading == false {
+                createTask(item)
+            }
         }
     }
     
@@ -139,6 +156,10 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
             return
         }
         removeItem(byIndex: index)
+        if downloadingItem?.title == title {
+            downloadingItem = nil
+            beginDownload()
+        }
     }
     
     /// 根据 title 进行筛选
@@ -196,16 +217,61 @@ extension HLSDownloader {
         return localDatas.first(where: { $0.taskIdentifier == identifier })
     }
     
+    /// 筛选下一个要下载的
+    /// - Returns: 下一个要下载的 item
+    private func filterNextItem() -> HLSLocalData? {
+        return localDatas.filter({ $0.status == .waiting }).sorted(by: { $0.addDate.timeIntervalSince1970 < $1.addDate.timeIntervalSince1970 }).first
+    }
+    
+    /// 开始下载任务
+    private func beginDownload() {
+        if let item = filterNextItem() {
+            if downloadingItem != item {
+                createTask(item)
+            }
+        } else {
+            isDownloading = false
+        }
+    }
+    
     /// 构建下载任务
     /// - Parameter item: item
     private func createTask(_ item: HLSLocalData) {
         guard let url = URL(string: item.url) else { return }
         let asset = AVURLAsset(url: url)
-        guard let task = downloadSession.makeAssetDownloadTask(asset: asset, assetTitle: item.title, assetArtworkData: nil) else { return }
-        tasks[task.taskIdentifier] = task
-        task.resume()
-        updateItem(byTitle: item.title, status: .downloading, taskIdentifier: task.taskIdentifier)
-        logger.info("开始下载 \(item.title)")
+        var tempTaskId: Int?
+        downloadingItem = item
+        if let taskId = item.taskIdentifier {
+            if let task = tasks[taskId] {
+                task.resume()
+                tempTaskId = taskId
+            } else {
+                downloadSession.getAllTasks { [weak self] tasks in
+                    if let task = tasks.first(where: { $0.taskIdentifier == taskId }) {
+                        task.resume()
+                        tempTaskId = taskId
+                        self?.isDownloading = true
+                        self?.updateItem(byTitle: item.title, status: .downloading, taskIdentifier: tempTaskId)
+                        logger.info("开始下载 \(item.title)")
+                    } else {
+                        self?.updateItem(byTitle: item.title, status: .downloading, taskIdentifier: nil)
+                        var item = item
+                        item.taskIdentifier = nil
+                        self?.createTask(item)
+                    }
+                }
+            }
+        } else {
+            guard let task = downloadSession.makeAssetDownloadTask(asset: asset, assetTitle: item.title, assetArtworkData: nil) else { return }
+            tasks[task.taskIdentifier] = task
+            tempTaskId = task.taskIdentifier
+            task.resume()
+        }
+        if tempTaskId != nil {
+            isDownloading = true
+            updateItem(byTitle: item.title, status: .downloading, taskIdentifier: tempTaskId)
+            logger.info("开始下载 \(item.title)")
+        }
     }
     
     /// 根据下标删除
@@ -230,11 +296,14 @@ extension HLSDownloader {
         })
     }
     
+    /// 删除本地缓存
+    /// - Parameter byTitle: title
     private func removeCache(byTitle: String) {
+        guard let title = byTitle.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return }
         DispatchQueue.global().async {
             let libraryDirPath = NSSearchPathForDirectoriesInDomains(.libraryDirectory, .userDomainMask, true)[0]
             if let subPaths = FileManager.default.subpaths(atPath: libraryDirPath) {
-                let items = subPaths.filter({ $0.contains(byTitle.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? byTitle) && $0.hasSuffix(".movpkg") })
+                let items = subPaths.filter({ $0.contains(title) && $0.hasSuffix(".movpkg") })
                 logger.info("libraryDirectory \(libraryDirPath): \(items.description)")
                 items.forEach { item in
                     try? FileManager.default.removeItem(atPath: libraryDirPath + "/" + item)
@@ -340,24 +409,29 @@ extension HLSDownloader: AVAssetDownloadDelegate, URLSessionDataDelegate {
         }
         logger.info("\(item.title)下载完成：\(location.relativePath)")
         updateItem(byTitle: item.title, localPath: location.relativePath)
+        beginDownload()
     }
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let item = filterItem(byIdentifier: task.taskIdentifier) else {
             return
         }
         guard error == nil else {
-            removeCache(byTitle: item.title)
             if let error = error as? NSError, error.code == 2 || error.code == -999 {
                 logger.info("error code 2")
+                updateItem(byTitle: item.title, status: .waiting)
+                createTask(item)
                 return
             } else {
+                removeCache(byTitle: item.title)
                 logger.error("下载失败：\(error?.localizedDescription ?? "unknown")")
                 updateItem(byTitle: item.title, status: .error)
                 let progressStruct = ProgressStruct(progress: 0, status: .error, desc: error?.localizedDescription)
                 progresses[item.title] = progressStruct
+                beginDownload()
                 return
             }
         }
+        beginDownload()
         updateItem(byTitle: item.title, status: .done)
         let progressStruct = ProgressStruct(progress: 100.0, status: .done)
         progresses[item.title] = progressStruct
