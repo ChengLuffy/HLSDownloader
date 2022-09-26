@@ -113,9 +113,7 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
             }
         }
         if isDownloading == false {
-            if let item = filterItem(byTitle: title) {
-                createTask(item)
-            }
+            beginDownload()
         }
     }
     
@@ -123,11 +121,11 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
     /// - discussion 由于 AVAssetDownloadTask 会出现暂停后无法重新开启，所以暂停后基本相当于取消
     /// - Parameter title: title
     public func suspend(byTitle title: String) {
+        updateItem(byTitle: title, status: .suspended)
         if let item = filterItem(byTitle: title), let taskId = item.taskIdentifier {
-            downloadSession.getAllTasks { [weak self] tasks in
+            downloadSession.getAllTasks { tasks in
                 if let task = tasks.first(where: { $0.taskIdentifier == taskId }) {
                     task.suspend()
-                    self?.updateItem(byTitle: title, status: .suspended)
                 }
             }
         }
@@ -141,10 +139,10 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
     /// - discussion 由于 AVAssetDownloadTask 会出现暂停后无法重新开启，所以暂停后只能重新开始
     /// - Parameter title: title
     public func restore(byTitle title: String) {
-        if let item = filterItem(byTitle: title) {
+        if let _ = filterItem(byTitle: title) {
             updateItem(byTitle: title, status: .waiting)
             if isDownloading == false {
-                createTask(item)
+                beginDownload()
             }
         }
     }
@@ -409,7 +407,6 @@ extension HLSDownloader: AVAssetDownloadDelegate, URLSessionDataDelegate {
         }
         logger.info("\(item.title)下载完成：\(location.relativePath)")
         updateItem(byTitle: item.title, localPath: location.relativePath)
-        beginDownload()
     }
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let item = filterItem(byIdentifier: task.taskIdentifier) else {
