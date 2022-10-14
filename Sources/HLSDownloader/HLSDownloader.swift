@@ -208,12 +208,12 @@ extension HLSDownloader {
     /// 根据 url 进行筛选
     /// - Parameter urlStr: url
     /// - Returns: 匹配入参 urlStr 的第一个 item
-    private func filterItem(byIdentifier identifier: Int) -> HLSLocalData? {
-        guard localDatas != nil else {
-            return nil
-        }
-        return localDatas.first(where: { $0.taskIdentifier == identifier })
-    }
+//    private func filterItem(byIdentifier identifier: Int) -> HLSLocalData? {
+//        guard localDatas != nil else {
+//            return nil
+//        }
+//        return localDatas.last(where: { $0.taskIdentifier == identifier })
+//    }
     
     /// 筛选下一个要下载的
     /// - Returns: 下一个要下载的 item
@@ -228,6 +228,7 @@ extension HLSDownloader {
                 createTask(item)
             }
         } else {
+            downloadingItem = nil
             isDownloading = false
         }
     }
@@ -396,20 +397,20 @@ extension HLSDownloader: AVAssetDownloadDelegate, URLSessionDataDelegate {
             percentComplete += loadedTimeRange.duration.seconds / timeRangeExpectedToLoad.duration.seconds
         }
         percentComplete *= 100
-        if let item = filterItem(byIdentifier: assetDownloadTask.taskIdentifier) {
+        if let item = downloadingItem {
             let progressStruct = ProgressStruct(progress: percentComplete, status: .downloading)
             progresses[item.title] = progressStruct
         }
     }
     public func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let item = filterItem(byIdentifier: assetDownloadTask.taskIdentifier) else {
+        guard let item = downloadingItem else {
             return
         }
         logger.info("\(item.title)下载完成：\(location.relativePath)")
         updateItem(byTitle: item.title, localPath: location.relativePath)
     }
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let item = filterItem(byIdentifier: task.taskIdentifier) else {
+        guard let item = downloadingItem else {
             return
         }
         guard error == nil else {
