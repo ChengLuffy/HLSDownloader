@@ -37,8 +37,6 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: 
         let indexPath = docPath + "/HLSDownloader/"
         return indexPath
     }()
-    // MARK: - 私有属性
-    fileprivate var tasks = [Int: AVAssetDownloadTask]()
     /// 本地数据
     private var localDatas: [HLSLocalData]! {
         didSet {
@@ -241,28 +239,22 @@ extension HLSDownloader {
         var tempTaskId: Int?
         downloadingItem = item
         if let taskId = item.taskIdentifier {
-            if let task = tasks[taskId] {
-                task.resume()
-                tempTaskId = taskId
-            } else {
-                downloadSession.getAllTasks { [weak self] tasks in
-                    if let task = tasks.first(where: { $0.taskIdentifier == taskId }) {
-                        task.resume()
-                        tempTaskId = taskId
-                        self?.isDownloading = true
-                        self?.updateItem(byTitle: item.title, status: .downloading, taskIdentifier: tempTaskId)
-                        logger.info("开始下载 \(item.title)")
-                    } else {
-                        self?.updateItem(byTitle: item.title, status: .downloading, taskIdentifier: nil)
-                        var item = item
-                        item.taskIdentifier = nil
-                        self?.createTask(item)
-                    }
+            downloadSession.getAllTasks { [weak self] tasks in
+                if let task = tasks.first(where: { $0.taskIdentifier == taskId }) {
+                    task.resume()
+                    tempTaskId = taskId
+                    self?.isDownloading = true
+                    self?.updateItem(byTitle: item.title, status: .downloading, taskIdentifier: tempTaskId)
+                    logger.info("开始下载 \(item.title)")
+                } else {
+                    self?.updateItem(byTitle: item.title, status: .downloading, taskIdentifier: nil)
+                    var item = item
+                    item.taskIdentifier = nil
+                    self?.createTask(item)
                 }
             }
         } else {
             guard let task = downloadSession.makeAssetDownloadTask(asset: asset, assetTitle: item.title, assetArtworkData: nil) else { return }
-            tasks[task.taskIdentifier] = task
             tempTaskId = task.taskIdentifier
             task.resume()
         }
@@ -420,7 +412,6 @@ extension HLSDownloader: AVAssetDownloadDelegate, URLSessionDataDelegate {
                 createTask(item)
                 return
             } else {
-                removeCache(byTitle: item.title)
                 logger.error("下载失败：\(error?.localizedDescription ?? "unknown")")
                 updateItem(byTitle: item.title, status: .error)
                 let progressStruct = ProgressStruct(progress: 0, status: .error, desc: error?.localizedDescription)
